@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Slacktop — Slack in a window</title>
+<style>
+  :root {
+    --titlebar: linear-gradient(#0a6cff, #0a4fd0);
+    --titlebar-inactive: linear-gradient(#9bb8d9, #6f93b8);
+    --win-border: #0a4fd0;
+    --win-bg: #e8eef5;
+    --win-shadow: 0 10px 30px rgba(0,0,0,.35);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 13px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif;
+    overflow: hidden;
+    /* Windows XP "Bliss"-ish grassy field: blue sky over a rolling green hill */
+    background:
+      radial-gradient(120% 80% at 20% 78%, #4f9a3a 0%, #3c7a2a 38%, #2c5c1f 70%, transparent 72%) bottom / 100% 100% no-repeat,
+      radial-gradient(140% 90% at 82% 92%, #5fb24a 0%, #3f8230 40%, transparent 60%) bottom / 100% 100% no-repeat,
+      linear-gradient(#3b8fd0 0%, #69b4e6 42%, #a9d8f0 58%, #bfe3f5 62%, #6fae4a 62.1%, #4f8a33 100%);
+    background-attachment: fixed;
+  }
+
+  /* ---- desktop windows ---- */
+  .win {
+    position: absolute;
+    background: var(--win-bg);
+    border: 1px solid var(--win-border);
+    border-radius: 8px 8px 6px 6px;
+    box-shadow: var(--win-shadow);
+    display: flex;
+    flex-direction: column;
+    min-width: 200px; min-height: 120px;
+    overflow: hidden;
+  }
+  .win.active { box-shadow: 0 14px 40px rgba(0,0,0,.45); }
+  .titlebar {
+    height: 30px; flex: 0 0 30px;
+    background: var(--titlebar);
+    color: #fff;
+    display: flex; align-items: center; gap: 8px;
+    padding: 0 8px;
+    cursor: grab;
+    user-select: none;
+    border-radius: 7px 7px 0 0;
+  }
+  .win.inactive .titlebar { background: var(--titlebar-inactive); }
+  .titlebar .dot { width: 12px; height: 12px; border-radius: 50%; flex: 0 0 12px; }
+  .titlebar .dot.r { background: #ff5f57; }
+  .titlebar .dot.y { background: #febc2e; }
+  .titlebar .dot.g { background: #28c840; }
+  .titlebar .t { font-weight: 600; font-size: 12px; text-shadow: 0 1px 1px rgba(0,0,0,.3); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .titlebar .badge { background: rgba(0,0,0,.25); border-radius: 8px; padding: 1px 7px; font-size: 11px; }
+  .win-body { flex: 1; min-height: 0; display: flex; flex-direction: column; background: #fff; }
+
+  /* ---- slack window ---- */
+  #slackWin { left: 60px; top: 50px; width: min(960px, 70vw); height: min(720px, 82vh); }
+  .toolbar {
+    display: flex; gap: 8px; align-items: center; padding: 8px 10px;
+    background: #f3f6fa; border-bottom: 1px solid #d6dee8; flex: 0 0 auto;
+    flex-wrap: wrap;
+  }
+  .toolbar select, .toolbar button, .toolbar input {
+    font: inherit; padding: 4px 8px; border-radius: 5px; border: 1px solid #c4cdda; background: #fff;
+  }
+  .toolbar button { cursor: pointer; background: #eaf1fb; }
+  .toolbar button:hover { background: #d8e6f8; }
+  #frame { width: 100%; flex: 1; border: 0; background: #fff; min-height: 0; }
+
+  /* ---- log window ---- */
+  #logWin { left: 80px; bottom: 40px; width: 420px; height: 200px; }
+  #log { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 6px 8px;
+    white-space: pre-wrap; word-break: break-word;
+    background: #1e1e1e; color: #d4d4d4;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.35;
+  }
+  #log .err { color: #ff8080; }
+  #log .ok { color: #8ad08a; }
+  #log .imbue { color: #6cb6ff; }
+  #log .relax { color: #d7ba7d; }
+
+  /* ---- widget window (DOM R/W POC) ---- */
+  #widgetWin { right: 40px; top: 50px; width: 360px; height: 360px; }
+  #widgetBody { padding: 8px; gap: 8px; display: flex; flex-direction: column; }
+  #widgetBody .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  #widgetBody button { font: inherit; padding: 5px 8px; border-radius: 5px; border: 1px solid #c4cdda; background: #eaf1fb; cursor: pointer; }
+  #widgetBody button:hover { background: #d8e6f8; }
+  #widgetOut { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 6px 8px;
+    background: #1e1e1e; color: #cfd6e0; font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.35;
+    white-space: pre-wrap; word-break: break-word; border-top: 1px solid #d6dee8; }
+  #widgetOut .clickline { color: #9fe0a0; border-top: 1px dotted #333; padding-top: 2px; margin-top: 2px; }
+  #widgetOut .clickline .path { color: #6cb6ff; }
+  #widgetOut .clickline .meta { color: #888; }
+  #widgetOut .resp { color: #d7ba7d; }
+
+  .clock {
+    position: fixed; right: 10px; bottom: 8px; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.5);
+    font-size: 12px; padding: 3px 10px; background: rgba(0,0,0,.25); border-radius: 6px;
+  }
+</style>
+</head>
+<body>
+
+<!-- Slack window -->
+<div class="win active" id="slackWin" style="z-index:2">
+  <div class="titlebar" data-drag>
+    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+    <span class="t">Slack — iframe</span>
+    <span class="badge" id="origin">origin</span>
+  </div>
+  <div class="win-body">
+    <div class="toolbar">
+      <label>URL
+        <select id="url">
+          <option value="https://slack.com">slack.com</option>
+          <option value="https://app.slack.com">app.slack.com</option>
+          <option value="https://a.slack.com">a.slack.com</option>
+          <option value="https://slack.com/sign_in">slack.com/sign_in</option>
+          <option value="https://imbue-ai.slack.com/" selected>imbue-ai.slack.com</option>
+        </select>
+      </label>
+      <button id="load">Load into iframe</button>
+      <button id="open">Open in new tab</button>
+    </div>
+    <iframe id="frame" referrerpolicy="no-referrer"
+      sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"></iframe>
+  </div>
+</div>
+
+<!-- Log window -->
+<div class="win" id="logWin" style="z-index:3">
+  <div class="titlebar" data-drag>
+    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+    <span class="t">ext.log — live</span>
+    <span class="badge" id="count">0</span>
+  </div>
+  <div class="win-body">
+    <pre id="log"></pre>
+  </div>
+</div>
+
+<!-- Widget window: DOM read/write POC -->
+<div class="win" id="widgetWin" style="z-index:4">
+  <div class="titlebar" data-drag>
+    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+    <span class="t">Widget — DOM R/W POC</span>
+    <span class="badge" id="widgetStatus">idle</span>
+    <span class="badge" id="clickCount" style="background:#1a7d2c">0 clicks</span>
+  </div>
+  <div class="win-body" id="widgetBody">
+    <div class="row">
+      <button data-cmd="ping">Ping iframe</button>
+      <button data-cmd="snapshot">Snapshot DOM</button>
+    </div>
+    <div class="row">
+      <button data-cmd="toggle">Toggle banner</button>
+      <button data-cmd="toggleOn">Banner on</button>
+      <button data-cmd="toggleOff">Banner off</button>
+    </div>
+    <pre id="widgetOut">— no response yet —</pre>
+  </div>
+</div>
+
+<div class="clock" id="clock">--:--</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const log = $('log');
+const frame = $('frame');
+const urlSel = $('url');
+const countEl = $('count');
+
+const out = (m, cls='') => {
+  const d = document.createElement('div');
+  if (cls) d.className = cls;
+  d.textContent = new Date().toLocaleTimeString() + '  ' + m;
+  log.prepend(d);
+};
+out('page origin: ' + location.origin, 'ok');
+$('origin').textContent = location.origin;
+
+function loadUrl(u){
+  out('loading: ' + u);
+  frame.src = u;
+  probe(u);
+}
+async function probe(u){
+  try{
+    const r = await fetch(u, {mode:'cors', method:'GET', credentials:'omit'});
+    out('fetch status: ' + r.status + ' ' + r.statusText);
+    ['x-frame-options','content-security-policy'].forEach(h=>{
+      const v = r.headers.get(h);
+      if (v) out('  ' + h + ': ' + v, 'err');
+    });
+  }catch(e){
+    out('fetch failed (cors): ' + e.message + ' — normal cross-origin; ext bypass handles framing', 'err');
+  }
+}
+
+$('load').onclick = () => loadUrl(urlSel.value);
+$('open').onclick = () => window.open(urlSel.value, '_blank');
+frame.addEventListener('load', () => out('iframe load event fired (blank if blocked)'));
+loadUrl(urlSel.value);
+
+// ---- live tail of ext.log from the dev server ----
+let lastLen = 0;
+async function tailLog(){
+  try{
+    const r = await fetch('/ext.log', {cache: 'no-store'});
+    if(!r.ok) return;
+    const txt = await r.text();
+    if(txt.length <= lastLen){ lastLen = txt.length; return; }
+    const fresh = txt.slice(lastLen);
+    lastLen = txt.length;
+    fresh.split('\n').filter(Boolean).forEach(line => {
+      let kind='', url='', extra='';
+      const m = line.match(/\{"kind":"([^"]+)","url":"([^"]+)"(?:,"extra":"([^"]*)")?/);
+      if(m){ kind=m[1]; url=m[2]; extra=m[3]||''; }
+      const cls = kind === 'imbue' ? 'imbue' : kind === 'relax' ? 'relax' : kind === 'nocookie' ? 'err' : '';
+      out(`[${kind}] ${url}${extra?'  '+extra:''}`, cls);
+      if(kind==='imbue' || kind==='relax'){
+        countEl.textContent = (parseInt(countEl.textContent,10)||0)+1;
+      }
+    });
+  }catch(e){}
+}
+setInterval(tailLog, 800);
+
+// ---- window dragging + focus ----
+let topZ = 10;
+function focusWin(w){
+  document.querySelectorAll('.win').forEach(x => { x.classList.add('inactive'); x.classList.remove('active'); });
+  w.classList.add('active'); w.classList.remove('inactive');
+  w.style.zIndex = ++topZ;
+}
+document.querySelectorAll('.win').forEach(w => {
+  w.addEventListener('mousedown', () => focusWin(w));
+  const bar = w.querySelector('[data-drag]');
+  let drag = null;
+  bar.addEventListener('mousedown', e => {
+    if(e.target.classList.contains('dot')) return;
+    drag = { x: e.clientX - w.offsetLeft, y: e.clientY - w.offsetTop };
+    bar.style.cursor = 'grabbing';
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', e => {
+    if(!drag) return;
+    let x = e.clientX - drag.x, y = e.clientY - drag.y;
+    x = Math.max(-w.offsetWidth + 80, Math.min(window.innerWidth - 40, x));
+    y = Math.max(0, Math.min(window.innerHeight - 40, y));
+    w.style.left = x + 'px'; w.style.top = y + 'px';
+    w.style.right = 'auto'; w.style.bottom = 'auto';
+  });
+  window.addEventListener('mouseup', () => { if(drag){ drag = null; bar.style.cursor='grab'; } });
+});
+
+// ---- clock ----
+const clock = $('clock');
+setInterval(() => clock.textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}), 1000);
+clock.textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+
+// ---- DOM read/write bridge: parent <-> content script in the slack iframe ----
+const widgetOut = $('widgetOut');
+const widgetStatus = $('widgetStatus');
+const clickCount = $('clickCount');
+let reqId = 0;
+const pending = new Map();
+
+window.addEventListener('message', (ev) => {
+  const d = ev.data;
+  if (!d || d.from !== 'slacktop-cs') return;
+
+  // reverse bridge: click events from inside slack (no id)
+  if (d.event === 'click') {
+    clickCount.textContent = ((parseInt(clickCount.textContent,10)||0) + 1) + ' clicks';
+    const line = document.createElement('div');
+    line.className = 'clickline';
+    const time = new Date(d.ts).toLocaleTimeString();
+    const text = d.text ? '  “' + d.text.replace(/\s+/g,' ').slice(0,80) + '”' : '';
+    const href = d.href ? '  →' + d.href : '';
+    line.innerHTML =
+      `<span class="meta">${time} click</span>` +
+      `<span class="path">  ${escapeHtml(d.path)}</span>` +
+      `<span class="meta">${escapeHtml(text + href)}</span>`;
+    widgetOut.prepend(line);
+    return;
+  }
+
+  // response to a cmd we sent
+  const p = pending.get(d.id);
+  if (!p) return;
+  pending.delete(d.id);
+  clearTimeout(p.timer);
+  widgetStatus.textContent = 'ok';
+  widgetStatus.style.background = '#1a7d2c';
+  const resp = document.createElement('div');
+  resp.className = 'resp';
+  resp.textContent = `cmd: ${d.cmd}\n${JSON.stringify(d.result, null, 2)}`;
+  widgetOut.prepend(resp);
+});
+
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c])); }
+
+function sendToIframe(cmd, timeoutMs = 5000) {
+  const id = ++reqId;
+  widgetStatus.textContent = 'sending…';
+  widgetStatus.style.background = '#b47a00';
+  const timer = setTimeout(() => {
+    if (pending.has(id)) {
+      pending.delete(id);
+      widgetStatus.textContent = 'timeout';
+      widgetStatus.style.background = '#a33';
+      widgetOut.textContent = `cmd: ${cmd}\n— timeout (iframe not loaded / content script not injected?) —`;
+    }
+  }, timeoutMs);
+  pending.set(id, { timer });
+  try {
+    frame.contentWindow.postMessage({ from: 'slacktop-parent', id, cmd }, '*');
+  } catch (e) {
+    pending.delete(id); clearTimeout(timer);
+    widgetStatus.textContent = 'error';
+    widgetOut.textContent = String(e);
+  }
+}
+
+document.querySelectorAll('#widgetBody button[data-cmd]').forEach(btn => {
+  btn.addEventListener('click', () => sendToIframe(btn.dataset.cmd));
+});
+</script>
+</body>
+</html>

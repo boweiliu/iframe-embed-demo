@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agenttop — multi-iframe agent relay</title>
+<style>
+  :root {
+    --titlebar: linear-gradient(#0a6cff, #0a4fd0);
+    --titlebar-inactive: linear-gradient(#9bb8d9, #6f93b8);
+    --win-border: #0a4fd0;
+    --win-bg: #e8eef5;
+    --win-shadow: 0 10px 30px rgba(0,0,0,.35);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 13px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif;
+    overflow: hidden;
+    background:
+      radial-gradient(120% 80% at 20% 78%, #4f9a3a 0%, #3c7a2a 38%, #2c5c1f 70%, transparent 72%) bottom / 100% 100% no-repeat,
+      radial-gradient(140% 90% at 82% 92%, #5fb24a 0%, #3f8230 40%, transparent 60%) bottom / 100% 100% no-repeat,
+      linear-gradient(#3b8fd0 0%, #69b4e6 42%, #a9d8f0 58%, #bfe3f5 62%, #6fae4a 62.1%, #4f8a33 100%);
+    background-attachment: fixed;
+  }
+  .win { position:absolute; background:var(--win-bg); border:1px solid var(--win-border);
+    border-radius:8px 8px 6px 6px; box-shadow:var(--win-shadow); display:flex; flex-direction:column;
+    min-width:200px; min-height:120px; overflow:hidden; }
+  .win.active { box-shadow:0 14px 40px rgba(0,0,0,.45); }
+  .titlebar { height:30px; flex:0 0 30px; background:var(--titlebar); color:#fff; display:flex;
+    align-items:center; gap:8px; padding:0 8px; cursor:grab; user-select:none; border-radius:7px 7px 0 0; }
+  .win.inactive .titlebar { background:var(--titlebar-inactive); }
+  .titlebar .dot { width:12px; height:12px; border-radius:50%; flex:0 0 12px; }
+  .titlebar .dot.r{background:#ff5f57}.titlebar .dot.y{background:#febc2e}.titlebar .dot.g{background:#28c840}
+  .titlebar .t { font-weight:600; font-size:12px; text-shadow:0 1px 1px rgba(0,0,0,.3); flex:1;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .titlebar .badge { background:rgba(0,0,0,.25); border-radius:8px; padding:1px 7px; font-size:11px; }
+  .win-body { flex:1; min-height:0; display:flex; flex-direction:column; background:#fff; }
+
+  /* iframe windows */
+  #winA { left:10px; top:10px; width:46vw; height:92vh; }
+  #winB { right:10px; top:10px; width:46vw; height:46vh; }
+  .toolbar { display:flex; gap:8px; align-items:center; padding:8px 10px; background:#f3f6fa;
+    border-bottom:1px solid #d6dee8; flex:0 0 auto; flex-wrap:wrap; }
+  .toolbar select, .toolbar button, .toolbar input { font:inherit; padding:4px 8px; border-radius:5px;
+    border:1px solid #c4cdda; background:#fff; }
+  .toolbar button { cursor:pointer; background:#eaf1fb; }
+  .toolbar button:hover { background:#d8e6f8; }
+  .frame { width:100%; flex:1; border:0; background:#fff; min-height:0; }
+
+  /* relay console */
+  #relayWin { right:10px; bottom:10px; width:46vw; height:42vh; }
+  #relayBody { display:flex; flex-direction:column; }
+  #routeMatrix { padding:6px 8px; background:#f3f6fa; border-bottom:1px solid #d6dee8; font-size:11px; flex:0 0 auto; }
+  #routeMatrix table { border-collapse:collapse; }
+  #routeMatrix td { padding:2px 6px; white-space:nowrap; }
+  #routeMatrix td.src { font-weight:600; }
+  #routeMatrix label { cursor:pointer; }
+  #relayLog { flex:1; min-height:0; overflow:auto; margin:0; padding:6px 8px;
+    background:#1e1e1e; color:#d4d4d4; font-family:ui-monospace,monospace; font-size:11px; line-height:1.4;
+    white-space:pre-wrap; word-break:break-word; }
+  #relayLog .m-muse{color:#c792ea} #relayLog .m-whatsapp{color:#25d366} #relayLog .m-slack{color:#6cb6ff}
+  #relayLog .m-pi{color:#d7ba7d} #relayLog .m-me{color:#9fe0a0} #relayLog .m-sys{color:#888}
+  #relayLog .m-diag{color:#ff9d3d} #relayLog .m-diag .kind{color:#ffd08a;font-weight:600}
+  #relayLog .m-diag-err{color:#ff5f57} #relayLog .m-diag-err .kind{color:#ff8080;font-weight:600}
+  #relayLog .ts{color:#666}
+  #relayBar { display:flex; gap:6px; padding:6px 8px; background:#f3f6fa; border-top:1px solid #d6dee8; flex:0 0 auto; }
+  #relayBar select, #relayBar input, #relayBar button { font:inherit; padding:5px 8px; border-radius:5px; border:1px solid #c4cdda; background:#fff; }
+  #relayBar input { flex:1; }
+  #relayBar button { cursor:pointer; background:#eaf1fb; }
+
+  /* bridge status */
+  #bridgeStatus { position:fixed; left:10px; bottom:8px; font-size:12px; padding:3px 10px;
+    background:rgba(0,0,0,.25); color:#fff; border-radius:6px; z-index:50; }
+  #bridgeStatus.ok { background:rgba(20,120,40,.6); }
+  #bridgeStatus.bad { background:rgba(160,40,40,.6); }
+  .clock { position:fixed; right:10px; bottom:8px; color:#fff; text-shadow:0 1px 2px rgba(0,0,0,.5);
+    font-size:12px; padding:3px 10px; background:rgba(0,0,0,.25); border-radius:6px; z-index:50; }
+  #buildBadge { position:fixed; left:10px; bottom:32px; font-size:11px; padding:3px 10px;
+    background:rgba(0,0,0,.3); color:#ffe08a; border-radius:6px; z-index:50; font-family:ui-monospace,monospace; }
+</style>
+</head>
+<body>
+
+<!-- iframe window A -->
+<div class="win active" id="winA" style="z-index:2">
+  <div class="titlebar" data-drag>
+    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+    <span class="t" id="tA">Pane A — iframe</span>
+    <span class="badge" id="badgeA">site</span>
+  </div>
+  <div class="win-body">
+    <div class="toolbar">
+      <label>site
+        <select id="selA">
+          <option value="https://imbue-ai.slack.com/">slack: imbue-ai</option>
+          <option value="https://web.whatsapp.com/">whatsapp</option>
+          <option value="https://muse.ai/">muse.ai</option>
+        </select>
+      </label>
+      <button id="loadA">Load</button>
+      <button id="openA">Open ↗</button>
+      <button data-cmd="ping" data-frame="A">Ping</button>
+      <button data-cmd="probe" data-frame="A">Probe</button>
+      <button data-cmd="getChat" data-frame="A">GetChat</button>
+    </div>
+    <iframe id="frameA" class="frame" referrerpolicy="no-referrer"></iframe>
+  </div>
+</div>
+
+<!-- iframe window B -->
+<div class="win" id="winB" style="z-index:3">
+  <div class="titlebar" data-drag>
+    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+    <span class="t" id="tB">Pane B — iframe</span>
+    <span class="badge" id="badgeB">site</span>
+  </div>
+  <div class="win-body">
+    <div class="toolbar">
+      <label>site
+        <select id="selB">
+          <option value="https://web.whatsapp.com/">whatsapp</option>
+          <option value="https://muse.ai/">muse.ai</option>
+          <option value="https://imbue-ai.slack.com/">slack: imbue-ai</option>
+        </select>
+      </label>
+      <button id="loadB">Load</button>
+      <button id="openB">Open ↗</button>
+      <button data-cmd="ping" data-frame="B">Ping</button>
+      <button data-cmd="probe" data-frame="B">Probe</button>
+      <button data-cmd="getChat" data-frame="B">GetChat</button>
+    </div>
+    <iframe id="frameB" class="frame" referrerpolicy="no-referrer"></iframe>
+  </div>
+</div>
+
+<!-- relay console -->
+<div class="win" id="relayWin" style="z-index:4">
+  <div class="titlebar" data-drag>
+    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+    <span class="t">Relay — agent chat bus</span>
+    <span class="badge" id="relayCount">0</span>
+  </div>
+  <div class="win-body" id="relayBody">
+    <div id="routeMatrix"></div>
+    <pre id="relayLog"></pre>
+    <div id="relayBar">
+      <select id="dest">
+        <option value="pi">→ pi (CLI)</option>
+        <option value="muse">→ muse</option>
+        <option value="whatsapp">→ whatsapp</option>
+        <option value="slack">→ slack</option>
+        <option value="me">→ me (log only)</option>
+      </select>
+      <input id="relayInput" placeholder="type a message to send to the selected destination…">
+      <button id="relaySend">Send</button>
+    </div>
+  </div>
+</div>
+
+<div id="bridgeStatus" class="bad">bridge: ?</div>
+<div id="buildBadge" title="page build hash">page build: ?</div>
+<div class="clock" id="clock">--:--</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const frameA = $('frameA'), frameB = $('frameB');
+// Page build hash stamped by build.sh. Shown in the bridge pill + build badge.
+const PAGE_BUILD = "build:20260925-054903-fe14";
+const selA = $('selA'), selB = $('selB');
+const relayLog = $('relayLog'), relayCount = $('relayCount');
+const relayInput = $('relayInput'), destSel = $('dest');
+
+// ---- site id from a loaded url ----
+function siteIdOfUrl(u){ try{ const h=new URL(u).hostname;
+  if(h.endsWith('.slack.com')||h==='slack.com') return 'slack';
+  if(h.endsWith('.whatsapp.com')) return 'whatsapp';
+  if(h==='muse.ai'||h.endsWith('.muse.ai')) return 'muse';
+  return h; }catch{ return '?'; } }
+function siteIdOfFrame(f){ return siteIdOfUrl(f.src); }
+function frameForSite(site){
+  if(siteIdOfFrame(frameA)===site) return frameA;
+  if(siteIdOfFrame(frameB)===site) return frameB;
+  return null;
+}
+function badgeFor(frame){ return frame===frameA ? $('badgeA') : $('badgeB'); }
+
+function logRelay(source, text, cls){
+  const line = document.createElement('div');
+  line.className = 'm-' + (cls||source);
+  const ts = new Date().toLocaleTimeString();
+  line.innerHTML = `<span class="ts">${ts}</span> [${source}] ${escapeHtml(text)}`;
+  relayLog.appendChild(line);
+  relayLog.scrollTop = relayLog.scrollHeight;
+  relayCount.textContent = (parseInt(relayCount.textContent,10)||0)+1;
+}
+function logSys(msg){ logRelay('sys', msg, 'sys'); }
+
+// persist a line to the extension's ext.log via the dev server (so iframe
+// diagnostics survive a page refresh and are greppable on disk).
+function postLog(line){
+  try { fetch('/__log__', { method:'POST', headers:{'Content-Type':'text/plain'}, body: JSON.stringify({ kind:'diag', ...line }) }); } catch(e){}
+}
+// handle diagnostics piped up from the injected probe inside an iframe.
+function handleDiag(site, kind, data, ts){
+  const isErr = (kind === 'error' || kind === 'rejection');
+  const cls = isErr ? 'm-diag-err' : 'm-diag';
+  let body = '';
+  if (kind === 'console') body = `[${data.level}] ${data.args.join('  ')}`;
+  else if (kind === 'error') body = `ERROR ${data.msg}  @ ${data.src}${data.stack ? '\n'+data.stack.slice(0,400) : ''}`;
+  else if (kind === 'rejection') body = `REJECTION ${data.reason}`;
+  else if (kind === 'frame') body = `frame: isFramed=${data.isFramed} topIsSelf=${data.topIsSelf} parentIsSelf=${data.parentIsSelf} opener=${data.opener} href=${data.href}` + (data.error ? `  ERR=${data.error}` : '');
+  else if (kind === 'loaded') body = `loaded: title=${JSON.stringify(data.title)} isFramed=${data.isFramed} href=${data.href}\nbodyText: ${data.bodyText}\nhtml: ${(data.html||'').slice(0,1200)}`;
+  else body = JSON.stringify(data).slice(0,600);
+  const line = document.createElement('div');
+  line.className = cls;
+  line.innerHTML = `<span class="ts">${new Date(ts||Date.now()).toLocaleTimeString()}</span> <span class="kind">[${site}/diag:${kind}]</span> ${escapeHtml(body)}`;
+  relayLog.appendChild(line);
+  relayLog.scrollTop = relayLog.scrollHeight;
+  postLog({ site, diagKind: kind, body: body.replace(/\n/g,' \\n ') });
+}
+
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c])); }
+
+// ---- load iframes ----
+// WAToolkit's trick: append a cache-busting ?watRnd=<random> to whatsapp so the
+// HTML is fetched fresh from the network (not app cache / SW cache) and our
+// onHeadersReceived X-Frame-Options strip actually applies. See prior art:
+// github.com/cprcrack/WAToolkit sources/background.js loadBackgroundPage().
+function bustCache(u){
+  try{
+    const url = new URL(u);
+    if (url.hostname.endsWith('whatsapp.com')){
+      url.searchParams.set('watRnd', String(Math.random()).slice(2));
+      return url.toString();
+    }
+  }catch{}
+  return u;
+}
+function loadFrame(frame, sel, badge, title){
+  const u0 = sel.value;
+  const u = bustCache(u0);
+  badge.textContent = siteIdOfUrl(u0);
+  title.textContent = (frame===frameA?'Pane A':'Pane B') + ' — ' + siteIdOfUrl(u0);
+  logSys('loading ' + (frame===frameA?'A':'B') + ': ' + u + (u!==u0?' (cache-busted)':''));
+  frame.src = u;
+}
+$('loadA').onclick = () => loadFrame(frameA, selA, $('badgeA'), $('tA'));
+$('loadB').onclick = () => loadFrame(frameB, selB, $('badgeB'), $('tB'));
+$('openA').onclick = () => window.open(selA.value,'_blank');
+$('openB').onclick = () => window.open(selB.value,'_blank');
+frameA.addEventListener('load', () => { $('badgeA').textContent = siteIdOfFrame(frameA); logSys('A loaded'); });
+frameB.addEventListener('load', () => { $('badgeB').textContent = siteIdOfFrame(frameB); logSys('B loaded'); });
+loadFrame(frameA, selA, $('badgeA'), $('tA'));
+loadFrame(frameB, selB, $('badgeB'), $('tB'));
+
+// ---- DOM bridge: parent <-> content script in either iframe ----
+let reqId = 0;
+const pending = new Map();
+function sendToFrame(frame, cmd, extra={}, timeoutMs=6000){
+  return new Promise((resolve) => {
+    const id = ++reqId;
+    const timer = setTimeout(() => { pending.delete(id); resolve({error:'timeout'}); }, timeoutMs);
+    pending.set(id, { timer, resolve });
+    try { frame.contentWindow.postMessage({ from:'agenttop-parent', id, cmd, ...extra }, '*'); }
+    catch(e){ pending.delete(id); clearTimeout(timer); resolve({error:String(e)}); }
+  });
+}
+window.addEventListener('message', (ev) => {
+  const d = ev.data;
+  if (!d || d.from !== 'agenttop-cs') return;
+
+  if (d.event === 'chat'){
+    // new chat message observed inside an iframe -> relay it
+    handleInbound(d.site, d.text, d.out);
+    return;
+  }
+  if (d.event === 'diag'){
+    // diagnostics from the injected probe inside an iframe (console/errors/frame)
+    handleDiag(d.site, d.kind, d.data, d.ts);
+    return;
+  }
+  if (d.event === 'click'){
+    // click observation (kept from v1) — log lightly
+    logRelay(d.site||'?', 'click: ' + (d.text||'').slice(0,60), 'sys');
+    return;
+  }
+  // response to a cmd
+  const p = pending.get(d.id);
+  if (!p) return;
+  pending.delete(d.id); clearTimeout(p.timer);
+  p.resolve(d.result);
+});
+document.querySelectorAll('button[data-cmd]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const frame = btn.dataset.frame === 'A' ? frameA : frameB;
+    const r = await sendToFrame(frame, btn.dataset.cmd);
+    logRelay(siteIdOfFrame(frame), '← ' + btn.dataset.cmd + ': ' + JSON.stringify(r).slice(0,300), 'sys');
+  });
+});
+
+// ---- routing matrix ----
+const SOURCES = ['muse','whatsapp','slack','pi'];
+const DESTS = ['muse','whatsapp','slack','pi','me'];
+// default routes: muse talks to whatsapp + me; whatsapp talks to pi + me; pi talks to me + whatsapp; slack to me
+const DEFAULT_ROUTES = {
+  muse: { whatsapp:true, me:true },
+  whatsapp: { pi:true, me:true },
+  slack: { me:true },
+  pi: { me:true, whatsapp:true },
+};
+let routes = JSON.parse(JSON.stringify(DEFAULT_ROUTES));
+function renderMatrix(){
+  const m = $('routeMatrix');
+  let html = '<table><thead><tr><td>from \\ to</td>';
+  DESTS.forEach(d => html += `<td>${d}</td>`);
+  html += '</tr></thead><tbody>';
+  SOURCES.forEach(s => {
+    html += `<tr><td class="src">${s}</td>`;
+    DESTS.forEach(d => {
+      const checked = routes[s] && routes[s][d] ? 'checked' : '';
+      html += `<td><label><input type="checkbox" data-src="${s}" data-dst="${d}" ${checked}></label></td>`;
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  m.innerHTML = html;
+  m.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      routes[cb.dataset.src] = routes[cb.dataset.src] || {};
+      routes[cb.dataset.src][cb.dataset.dst] = cb.checked;
+    });
+  });
+}
+renderMatrix();
+
+// ---- inbound routing with simple loop guard ----
+const recent = new Map(); // key -> ts  (dedupe within 1500ms)
+function guardKey(src, text){ return src + '|' + text.slice(0,80); }
+function handleInbound(source, text, _out){
+  if (!source || !text) return;
+  logRelay(source, text);
+  const dests = routes[source] || {};
+  for (const d of DESTS){
+    if (!dests[d]) continue;
+    if (d === 'me') continue; // already logged
+    const key = guardKey(d, text);
+    const now = Date.now();
+    if (recent.has(key) && now - recent.get(key) < 1500) continue;
+    recent.set(key, now);
+    deliver(d, text, source);
+  }
+}
+function deliver(dest, text, fromSource){
+  if (dest === 'pi'){ piSend(text); return; }
+  const f = frameForSite(dest);
+  if (!f){ logSys(`→ ${dest}: no pane loaded with that site (from ${fromSource})`); return; }
+  sendToFrame(f, 'sendChat', { text }).then(r => {
+    logRelay('sys', `→ ${dest} (from ${fromSource}): ${r && r.ok ? 'sent' : 'fail ' + (r&&r.error||'')}`, 'sys');
+  });
+}
+
+// ---- manual send ----
+$('relaySend').onclick = () => {
+  const text = relayInput.value.trim();
+  if (!text) return;
+  relayInput.value = '';
+  logRelay('me', text);
+  deliver(destSel.value, text, 'me');
+};
+relayInput.addEventListener('keydown', e => { if (e.key === 'Enter') $('relaySend').click(); });
+
+// ---- bridge to desktop pi (CLI agent) via WebSocket ----
+let ws = null;
+const bridgeStatus = $('bridgeStatus');
+function connectBridge(){
+  bridgeStatus.textContent = 'bridge: connecting…'; bridgeStatus.className = 'bad';
+  try { ws = new WebSocket('ws://127.0.0.1:8770'); } catch(e){ bridgeStatus.textContent='bridge: no ws'; return; }
+  ws.onopen = () => { bridgeStatus.textContent='bridge: connected'; bridgeStatus.className='ok'; logSys('bridge connected'); };
+  ws.onclose = () => { bridgeStatus.textContent='bridge: disconnected'; bridgeStatus.className='bad'; ws=null; setTimeout(connectBridge, 2000); };
+  ws.onerror = () => { bridgeStatus.className='bad'; };
+  ws.onmessage = (ev) => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.from !== 'pi') return;
+    if (m.kind === 'text'){
+      // streaming assistant text delta — accumulate into a line
+      streamBuf += m.delta;
+      flushStream();
+    } else if (m.kind === 'agent_settled'){
+      flushStream(true);
+    } else if (m.kind === 'status'){
+      logSys('pi: ' + m.status);
+    } else if (m.kind === 'response'){
+      // command response (e.g. get_state) — log compactly
+      logRelay('pi', 'resp: ' + JSON.stringify(m.response).slice(0,200), 'sys');
+    } else if (m.kind === 'stderr'){
+      // ignore noisy stderr
+    }
+  };
+}
+let streamBuf = '', streamEl = null, flushTimer = null;
+function flushStream(final){
+  if (!streamBuf) return;
+  if (!streamEl){ streamEl = document.createElement('div'); streamEl.className='m-pi'; relayLog.appendChild(streamEl); }
+  const ts = new Date().toLocaleTimeString();
+  streamEl.innerHTML = `<span class="ts">${ts}</span> [pi] ${escapeHtml(streamBuf)}`;
+  relayLog.scrollTop = relayLog.scrollHeight;
+  if (final){ streamEl = null; streamBuf = ''; return; }
+  clearTimeout(flushTimer);
+  flushTimer = setTimeout(() => { streamEl = null; streamBuf = ''; }, 4000);
+}
+function piSend(text){
+  if (!ws || ws.readyState !== 1){ logSys('pi: bridge not connected — start bridge.js'); return; }
+  ws.send(JSON.stringify({ to:'pi', type:'prompt', message:text }));
+  logRelay('me', '→ pi: ' + text.slice(0,80), 'sys');
+}
+connectBridge();
+
+// ---- window dragging + focus ----
+let topZ = 10;
+function focusWin(w){
+  document.querySelectorAll('.win').forEach(x => { x.classList.add('inactive'); x.classList.remove('active'); });
+  w.classList.add('active'); w.classList.remove('inactive'); w.style.zIndex = ++topZ;
+}
+document.querySelectorAll('.win').forEach(w => {
+  w.addEventListener('mousedown', () => focusWin(w));
+  const bar = w.querySelector('[data-drag]');
+  let drag = null;
+  bar.addEventListener('mousedown', e => {
+    if(e.target.classList.contains('dot')) return;
+    drag = { x: e.clientX - w.offsetLeft, y: e.clientY - w.offsetTop };
+    bar.style.cursor = 'grabbing'; e.preventDefault();
+  });
+  window.addEventListener('mousemove', e => {
+    if(!drag) return;
+    let x = e.clientX - drag.x, y = e.clientY - drag.y;
+    x = Math.max(-w.offsetWidth + 80, Math.min(window.innerWidth - 40, x));
+    y = Math.max(0, Math.min(window.innerHeight - 40, y));
+    w.style.left = x + 'px'; w.style.top = y + 'px'; w.style.right='auto'; w.style.bottom='auto';
+  });
+  window.addEventListener('mouseup', () => { if(drag){ drag = null; bar.style.cursor='grab'; } });
+});
+
+// ---- clock ----
+const clock = $('clock');
+const tick = () => clock.textContent = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+tick(); setInterval(tick, 1000);
+
+logSys('Agenttop ready. Load both panes, log into each site normally first, then watch chat flow.');
+
+// ---- auto-reload on build change so I can iterate the PAGE without you: poll
+// /build.json; when the hash changes (after ./build.sh), hard-refresh the page.
+// (The diagnostics probe is injected by the content script at document_start,
+// so it re-runs automatically on each page/iframe reload — no inject needed.)
+let lastBuild = null;
+let watchBooted = false;
+async function watchBuild(){
+  try {
+    const r = await fetch('/build.json', { cache: 'no-store' });
+    if (!r.ok) return;
+    const h = (await r.json()).hash;
+    if (!watchBooted){ watchBooted = true; lastBuild = h; try { fetch('/__log__', {method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({kind:'page', build: PAGE_BUILD, bootedWith:h})}); } catch(e){} return; }
+    if (h !== lastBuild) {
+      try { fetch('/__log__', {method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({kind:'watch', from:lastBuild, to:h, reload:true})}); } catch(e){}
+      logSys('build changed ' + lastBuild + ' -> ' + h + '; auto-reloading'); location.reload();
+    }
+  } catch (e) {}
+}
+setInterval(watchBuild, 1500);
+
+// ---- build hash display ----
+const buildBadge = $('buildBadge');
+buildBadge.textContent = 'page build: ' + PAGE_BUILD;
+// Ping responses now include the content-script build (see content.js), so
+// clicking Ping on a pane prints "build":"build:20260925-054903-fe14" in the relay log.
+</script>
+</body>
+</html>
